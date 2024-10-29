@@ -12,7 +12,7 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"os"
 	"os/user"
@@ -47,8 +47,19 @@ type Context struct {
 }
 
 type UserAuth struct {
-	ClientCertificateData string `yaml:"client-certificate-data"`
-	ClientKeyData         string `yaml:"client-key-data"`
+	ClientCertificateData string `yaml:"client-certificate-data,omitempty"`
+	ClientKeyData         string `yaml:"client-key-data,omitempty"`
+	Exec                  Exec   `yaml:"exec,omitempty"`
+}
+
+type Exec struct {
+	ApiVersion         string `yaml:"apiVersion"`
+	Args               string `yaml:"args,omitempty"`
+	Command            string `yaml:"command"`
+	Env                string `yaml:"env,omitempty"`
+	InstallHint        string `yaml:"installHint"`
+	InteractiveMode    string `yaml:"interactiveMode"`
+	ProvideClusterInfo bool   `yaml:"provideClusterInfo"`
 }
 
 type User struct {
@@ -69,28 +80,41 @@ type K8SConfig struct {
 	Users          []User          `yaml:"users"`
 }
 
-func readK8SConfigFile(file string, yamlFile *K8SConfig) {
-	f, err := os.Open(file)
+// parseK8SConfig reads and parses kubernetes config from an io.Reader
+func parseK8SConfig(r io.Reader) (*K8SConfig, error) {
+	data, err := io.ReadAll(r)
 	if err != nil {
-		log.Fatalf("os.Open() failed with '%s'\n", err)
+		return nil, fmt.Errorf("reading config: %w", err)
 	}
-	defer f.Close()
 
-	dec := yaml.NewDecoder(f)
+	var config K8SConfig
+	if err := yaml.Unmarshal(data, &config); err != nil {
+		return nil, fmt.Errorf("parsing yaml: %w", err)
+	}
 
-	//var yamlFile K8SConfig
-	err = dec.Decode(yamlFile)
+	return &config, nil
+}
+
+// readK8SConfigFile reads kubernetes config from a file
+func readK8SConfigFile(filename string) (*K8SConfig, error) {
+	file, err := os.Open(filename)
 	if err != nil {
-		log.Fatalf("dec.Decode() failed with '%s'\n", err)
+		return nil, fmt.Errorf("opening file %s: %w", filename, err)
 	}
+	defer file.Close()
+
+	return parseK8SConfig(file)
 }
 
 func writeK8SConfigFile(file string, k8sCfg *K8SConfig) {
 	bytes, err := yaml.Marshal(k8sCfg)
 	if err != nil {
-		log.Fatalf(err.Error())
+		log.Fatalf("%s", err.Error())
 	}
-	ioutil.WriteFile(file, bytes, 0644)
+	err = os.WriteFile(file, bytes, 0644)
+	if err != nil {
+		log.Fatalf("%s", err.Error())
+	}
 }
 
 type arrayFlags []string
@@ -132,9 +156,9 @@ func MergeCfg(dstCfg *K8SConfig, srcCfg *K8SConfig) {
 	}
 	for _, srcCluster := range srcCfg.Clusters {
 		cName := srcCluster.Name
-		for stringExists(knownClusterNames, cName) == true {
+		for stringExists(knownClusterNames, cName) {
 			text = " "
-			for strings.Contains(text, " ") == true {
+			for strings.Contains(text, " ") {
 				fmt.Printf("Cluster name '%v' already exists. Please provide a valid([A-Za-z0-9]+) new name: ", cName)
 				text, _ = reader.ReadString('\n')
 				text = strings.Replace(text, "\n", "", -1)
@@ -151,9 +175,9 @@ func MergeCfg(dstCfg *K8SConfig, srcCfg *K8SConfig) {
 	}
 	for _, srcUser := range srcCfg.Users {
 		cName := srcUser.Name
-		for stringExists(knownUserNames, cName) == true {
+		for stringExists(knownUserNames, cName) {
 			text = " "
-			for strings.Contains(text, " ") == true {
+			for strings.Contains(text, " ") {
 				fmt.Printf("User name '%v' already exists. Please provide a valid([A-Za-z0-9]+) new name: ", cName)
 				text, _ = reader.ReadString('\n')
 				text = strings.Replace(text, "\n", "", -1)
@@ -180,9 +204,9 @@ func MergeCfg(dstCfg *K8SConfig, srcCfg *K8SConfig) {
 			srcContext.Name = cName
 			srcContext.Context.User = renamedUsers[srcContext.Context.User]
 		}
-		for stringExists(knownContextNames, cName) == true {
+		for stringExists(knownContextNames, cName) {
 			text = " "
-			for strings.Contains(text, " ") == true {
+			for strings.Contains(text, " ") {
 				fmt.Printf("Context name '%v' already exists. Please provide a valid([A-Za-z0-9]+) new name: ", cName)
 				text, _ = reader.ReadString('\n')
 				text = strings.Replace(text, "\n", "", -1)
@@ -204,7 +228,7 @@ func main() {
 	//}
 	user, err := user.Current()
 	if err != nil {
-		log.Fatalf(err.Error())
+		log.Fatalf("%s", err.Error())
 	}
 	var dstFile = flag.String("d", fmt.Sprintf("%v/%v", user.HomeDir, ".kube/config"), "File where we want to include the new config")
 	flag.Var(&srcFiles, "s", "Files you want to merge with dst file.")
@@ -221,14 +245,27 @@ func main() {
 
 	// Connect a client.
 
-	var cfg, full_cfg K8SConfig
+	var cfg, full_cfg *K8SConfig
 
-	readK8SConfigFile(*dstFile, &full_cfg)
+	full_cfg, err = readK8SConfigFile(*dstFile)
+	if err != nil {
+		log.Fatalf("%s", err.Error())
+	}
 	for _, file := range srcFiles {
 		//log.Println(index, file)
-		readK8SConfigFile(file, &cfg)
-		MergeCfg(&full_cfg, &cfg)
+		if file == "-" {
+			cfg, err = parseK8SConfig(bufio.NewReader(os.Stdin))
+			if err != nil {
+				log.Fatalf("%s", err.Error())
+			}
+		} else {
+			cfg, err = readK8SConfigFile(file)
+			if err != nil {
+				log.Fatalf("%s", err.Error())
+			}
+		}
+		MergeCfg(full_cfg, cfg)
 	}
-	writeK8SConfigFile(*dstFile, &full_cfg)
+	writeK8SConfigFile(*dstFile, full_cfg)
 
 }
