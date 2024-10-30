@@ -8,7 +8,6 @@
 package main
 
 import (
-	//"encoding/json"
 	"bufio"
 	"flag"
 	"fmt"
@@ -18,7 +17,7 @@ import (
 	"os/user"
 	"strings"
 
-	"gopkg.in/yaml.v2"
+	"gopkg.in/yaml.v3"
 )
 
 type Rename struct {
@@ -231,6 +230,7 @@ func main() {
 		log.Fatalf("%s", err.Error())
 	}
 	var dstFile = flag.String("d", fmt.Sprintf("%v/%v", user.HomeDir, ".kube/config"), "File where we want to include the new config")
+	var k8sName = flag.String("n", "", "Name used in new kubernetes used to identify new imported config")
 	flag.Var(&srcFiles, "s", "Files you want to merge with dst file.")
 	flag.Parse()
 	seen := make(map[string]bool)
@@ -263,6 +263,13 @@ func main() {
 			if err != nil {
 				log.Fatalf("%s", err.Error())
 			}
+		}
+		if k8sName != nil && *k8sName != "" {
+			cfg.Clusters[0].Name = *k8sName
+			cfg.Contexts[0].Context.User = *k8sName
+			cfg.Contexts[0].Context.Cluster = *k8sName
+			cfg.Contexts[0].Name = *k8sName
+			cfg.Users[0].Name = *k8sName
 		}
 		MergeCfg(full_cfg, cfg)
 	}
